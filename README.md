@@ -1,56 +1,48 @@
-# 真题专项训练生成器
+# 0→1 课程真题高频考点专项训练生成器
 
-用往年卷和本次考试范围生成中文训练册。脚本从试卷里选代表题，用考试范围筛掉超纲内容，再给每道例题配考点讲解、专项练习和解析。成品同时保存为 Markdown 和 PDF。
+传入往年试卷合订本 PDF 与教材已学内容目录，程序会逐题拆解考点、对照目录剔除超纲与未学内容、由 Gemini 为留下的高频考点编写 0→1 专项讲义并本地导出中文 PDF，最后由 GPT 独立核验硬伤并产出一份给人看的修改建议文件。
 
-## 安装
+## 工作流与模型分工
 
-在 Windows 上准备 Python 3.11 或更新版本。安装并登录 [Codex CLI](https://developers.openai.com/codex/cli/) 和 [Antigravity CLI](https://antigravity.google/docs/getting-started)。脚本默认从 PATH 查找 `codex.exe` 和 `agy.exe`。如果终端只提供 Codex 的 npm 启动脚本，用 `--codex` 指向原生 `codex.exe`。两个 CLI 的路径选项放在 `start` 或 `resume` 前。
+1. **建索引（本地 PyMuPDF + RapidOCR）**：逐页提取往年卷文字；对扫描页或文字极少的图片页自动补做本地 OCR，结果缓存到 `page-index/`。
+2. **分批逐题拆考点（Gemini 4 Neon High / `agy`）**：按页分批逐题提炼大学课程考点（尽量拆细但不拆到高中及以下前置基础），自动跳过答案页和封面目录页，每完成一批立刻追加写入 `extracted_batches.jsonl`。
+3. **全局归并与目录过滤（Gemini 4 Neon High / `agy`）**：合并同义考点、去重重复试卷后统计真实考频；严格对照教材已学目录（划掉、涂黑或未列入目录的考点全部丢弃），按 0→1 学习顺序排好并保存为 `filtered_topics.json`。
+4. **逐考点 0→1 成文与本地导出（Gemini + Pandoc/Typst）**：
+   - 逐个考点读取代表真题所在原卷页图精写讲义（追加写入 `generated_topics.jsonl`），把读者当作“有先修基础但未学过本门课”的新手，讲清识别信号、公式符号含义与适用条件、通用解题步骤、必配单点入门小例题以及往年真题实战示范（含原题配图裁剪）。
+   - 汇总生成 `workbook.md`，并由 Python 直接调用 [pdf_export.py](pdf_export.py) 在本地排版导出 `workbook.pdf`。
+5. **只读硬伤审校（GPT-6.2 Sol / `codex`）**：
+   - 分组读取讲义、原卷页图与裁剪图做独立验算（追加写入 `review_batches.jsonl`），输出给人看的 `review_suggestions.md`，**绝不修改或回滚原讲义**。
+   - 仅当能明确指出逻辑/数理/概念/公式/计算/原题或超纲硬伤，并给出错因与可验证依据时才提出建议；无明显硬伤则不提建议。
 
-在仓库目录打开 PowerShell：
+## 在 Windows 上运行
+
+在项目目录打开 PowerShell，确保本机已完成 `agy` 与 `codex login` 登录，安装依赖后即可运行：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe course_workflow.py start --title "课程名" --paper "往年卷.pdf" --scope "目录1.png" "目录2.png"
 ```
 
-## 使用
+- `--scope` 支持传入一张或多张目录图片，也兼容 `.md`、`.txt` 或 `.pdf` 目录文件。
+- 常用可选参数：
+  - `--batch-pages 6`：提炼考点时每批处理的 PDF 页数（默认 6）。
+  - `--review-batch-size 2`：GPT 独立审校时每批处理的考点数（默认 2）。
+  - `--skip-review`：仅生成 `workbook.md` 与 `workbook.pdf`，暂不运行 GPT 独立审校。
+  - `--codex` / `--agy`：分别指定 `codex` 与 `agy` 可执行文件路径。
 
-### 从往年卷生成一门课的训练册
-
-把往年试卷 PDF 和本次考试范围的目录图片放进 `inputs/`。目录上划掉或涂掉的小节会在筛题时排除。
+若某一步中断，直接从终端打印出的运行目录续跑（已完成写入 JSONL/JSON 的批次与考点会自动跳过）：
 
 ```powershell
-.\.venv\Scripts\python.exe course_workflow.py start --title "课程名" --paper "inputs\往年卷.pdf" --scope "inputs\考试范围1.png" "inputs\考试范围2.png"
+.\.venv\Scripts\python.exe course_workflow.py resume "runs\course-实际运行目录"
 ```
 
-Python 提取各页文字，并用本地 OCR 为扫描页建索引。Codex 按范围筛选候选题，核对原卷页和图示，再以例题为单位组织训练。每组保留试卷出处和范围小节，下面配 `n.1`、`n.2` 等小例题。默认每次选编最多 14 组代表题。
+## 运行目录产物说明
 
-### 从一道题开始
-
-仓库带了一道自编样题，可直接用来了解输入和输出格式：
-
-```powershell
-.\.venv\Scripts\python.exe run.py start examples/paper.md examples/scope.md --question 8
-```
-
-自己的单题可以用 Markdown、UTF-8 文本或 PDF。使用 PDF 时，用 `--page` 指定题目所在页。可用 `--textbook` 提供相关教材摘录。
-
-## 成品与续跑
-
-终端会打印本次运行目录，成品是其中的 `workbook.pdf`，校对时可以打开 `workbook.md`。课程模式还会保存 `selection.json`，用于在原卷里找到候选题。
-
-运行中断后，用同一个脚本继续已有的运行目录。已保存的阶段结果会直接复用。
-
-```powershell
-.\.venv\Scripts\python.exe course_workflow.py resume "runs\实际课程运行目录"
-```
-
-## 模型和用量
-
-默认使用 GPT-6.2 Sol High 和 Gemini 4 Neon High，可在 [`run.py`](run.py) 顶部调整。Codex 负责选题、生成和末审。Gemini 润色讲解与解析中的自然语言，再调用本地排版命令导出 PDF。完整课程模式通常启动 Codex 三次、Antigravity 两次，单题模式少一次选题调用。
-
-项目直接调用本机已登录的官方 CLI。OCR 和 PDF 排版在本机完成，题目和考试范围会随请求发送给 Codex，待润色段落会发送给 Antigravity。请使用你有权提交的资料，并确认当前账号具备所选模型和非交互模式的访问权限。 [Antigravity 非交互模式](https://antigravity.google/docs/cli/headless/) · [Antigravity 使用说明](https://antigravity.google/docs/faq)
-
-## 许可证
-
-代码和自编示例采用 [MIT 许可证](LICENSE)。
+- `page-index/`：逐页试卷文字索引。
+- `extracted_batches.jsonl`：分批提炼出的往年题与考点缓存（单文件追加写入）。
+- `filtered_topics.json`：归并、统计考频并经教材目录过滤后的保留考点与丢弃记录。
+- `generated_topics.jsonl`：逐考点生成的 0→1 讲义缓存（单文件追加写入）。
+- `workbook.md` / `workbook.pdf`：最终生成的 0→1 高频考点专项训练讲义与 PDF。
+- `review_batches.jsonl` / `review_suggestions.md`：GPT 只读审校缓存与最终给人看的硬伤修改建议（仅 Markdown）。
+- `stage-logs/`：各阶段输入 JSON、Schema、响应及 CLI 运行日志。
